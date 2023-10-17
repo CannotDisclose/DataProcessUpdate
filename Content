@@ -1,0 +1,634 @@
+# Import required libraries for data manipulation, file operations, plotting, and cycling through colors.
+import pandas as pd
+import os
+import matplotlib.pyplot as plt
+from itertools import cycle
+import matplotlib.patches as patches
+
+# Create an infinite cycle of colors to use when plotting multiple traces.
+colors = cycle(['r', 'b', 'g', 'm', 'c', 'y'])
+
+# Initialize empty lists to store different color values for various metrics.
+slope_colors = []
+r2_colors = []
+average_slope_colors = []
+average_r2_colors = []
+cumulative_slope_colors = []
+cumulative_r2_colors = []
+
+# --- User Input Section ---
+# Get user input for the directory where the file is located.
+file_directory = input("Enter the file directory: ")
+
+# Get user input for the name of the file.
+file_name = input("Enter the file name: ")
+
+# Combine directory and file name to create the full path to the file.
+file_path = os.path.join(file_directory, file_name)
+
+# Get user input for the number of data points to exclude from the start of each trace.
+beginning_remove = int(input("Enter the number of points to remove from the beginning: "))
+
+# Get user input for the number of data points to exclude from the end of each trace.
+end_remove = int(input("Enter the number of points to remove from the end: "))
+
+# --- Data Reading and Organization ---
+# Open the file and read its lines into a list.
+with open(file_path, 'r') as file:
+    lines = file.readlines()
+
+# Extract trace data from the list of lines. Assumes each trace starts with the word "Trace:" and has 2002 lines.
+traces_data = [lines[idx + 2: idx + 2004] for idx, line in enumerate(lines) if "Trace: " in line]
+
+# Convert each trace (a list of strings) into a pandas DataFrame with columns for X-Value and Y-Data Value.
+traces = [pd.DataFrame([line.split()[1:3] for line in trace], columns=['X-Value', 'Y-Data Value'], dtype=float) for
+          trace in traces_data]
+
+# Initialize lists to store adjusted and raw traces.
+adjusted_traces = []
+raw_traces = []
+
+# Loop through each trace to make adjustments.
+for trace in traces:
+    # Exclude the specified number of points from the start and end of the trace.
+    trace = trace.iloc[beginning_remove:-end_remove].copy()
+
+    # Scale the Y-values of the trace by a factor of 50.
+    trace['Y-Data Value'] = trace['Y-Data Value'] * 50
+    raw_traces.append(trace.copy())  # Save a copy of the scaled trace for later.
+
+    # Determine the Y-values at the start and end of the adjusted trace, as well as the total number of points.
+    first_point = trace.iloc[0]['Y-Data Value']
+    last_point = trace.iloc[-1]['Y-Data Value']
+    total_points = len(trace)
+
+    # Create a copy of the trace to apply correction to the Y-values.
+    corrected_trace = trace.copy()
+    for idx, row in corrected_trace.iterrows():
+        # Adjust each Y-value based on the difference between the start and end Y-values.
+        row['Y-Data Value'] = (row['Y-Data Value'] - first_point) + (
+                (first_point - last_point) / (total_points - 1)) * idx
+
+    # Append the corrected trace to the list of adjusted traces.
+    adjusted_traces.append(corrected_trace)
+
+# Create a new directory to save plots if it doesn't already exist.
+save_directory = os.path.join(file_directory, "Plots")
+if not os.path.exists(save_directory):
+    os.makedirs(save_directory)
+
+# Define font styles for the plot titles and axes.
+title_font = {'fontname': 'Arial', 'size': '14', 'color': 'black', 'weight': 'bold'}
+axis_font = {'fontname': 'Arial', 'size': '12', 'weight': 'bold'}
+
+# Define constants for plotting multiple traces on one figure.
+traces_per_figure = 25
+figures_required = len(adjusted_traces) // traces_per_figure
+
+
+# Plotting function
+def plot_and_save(traces, prefix, ylabel):
+    for fig_num in range(figures_required):
+        plt.figure(figsize=(15, 15))
+        subset_traces = traces[fig_num * traces_per_figure:(fig_num + 1) * traces_per_figure]
+
+        for idx, trace in enumerate(subset_traces):
+            ax = plt.subplot(5, 5, idx + 1)
+            ax.tick_params(direction='in')
+            ax.locator_params(axis='x', nbins=6)
+            plt.plot(trace['X-Value'], trace['Y-Data Value'])
+            plt.title(f'Trial {fig_num * traces_per_figure + idx + 1}', **title_font)
+            plt.xlabel('Applied Voltage', **axis_font)
+            plt.ylabel(ylabel, **axis_font)  # Use the given ylabel
+
+        file_path = os.path.join(save_directory, f'{prefix}_Array_{fig_num + 1}.jpg')
+        plt.tight_layout()
+        plt.savefig(file_path)
+        plt.close()
+
+
+# Plot and save raw data
+plot_and_save(raw_traces, "Raw", 'LDV Direct Output (V)')
+
+# Plot and save adjusted data
+plot_and_save(adjusted_traces, "Corrected", 'Displacement (nm)')
+
+# Data Organization for Averages
+traces_batches = [adjusted_traces[i:i + 10] for i in range(0, len(adjusted_traces), 10)]
+average_traces = [pd.concat(batch).groupby(level=0).mean() for batch in traces_batches]
+
+# Explicit Cumulative Averages Calculation
+cumulative_average_traces = []
+for i in range(10, len(adjusted_traces) + 1, 10):
+    current_traces = adjusted_traces[:i]
+    cumulative_avg = pd.concat(current_traces).groupby(level=0).mean()
+    cumulative_average_traces.append(cumulative_avg)
+
+
+# Collect the slope ranges from user
+def get_ranges():
+    slopes = []
+    for i in range(4):  # hard-coded to loop 4 times
+        range_input = input(f"Enter slope range {i + 1} (format: start-end e.g., 0-5): ")
+        start, end = map(float, range_input.split('-'))
+
+        if start != end:  # This ensures 0v-0v (or any matching pair) is skipped
+            while True:
+                segment_type = input(
+                    f"For the range {start}-{end}, choose segment type (ascending/descending/both): ").lower()
+                if segment_type in ['ascending', 'descending', 'both']:
+                    break
+                print("Invalid choice. Please choose 'ascending', 'descending', or 'both'.")
+            slopes.append(((start, end), segment_type))
+    return slopes
+
+
+# Function to add dashed slope lines to an axis
+
+
+from itertools import cycle
+import numpy as np
+
+from sklearn.metrics import r2_score
+
+# Create storage for slopes and R^2 values
+average_slopes = [[] for _ in range(len(average_traces))]  # A list of lists
+average_r2 = [[] for _ in range(len(average_traces))]  # A list of lists
+cumulative_average_slopes = [[] for _ in range(len(cumulative_average_traces))]  # A list of lists
+cumulative_average_r2 = [[] for _ in range(len(cumulative_average_traces))]  # A list of lists
+
+
+def identify_peak(x_values):
+    # Identify where the x_values start to decrease
+    for i in range(1, len(x_values)):
+        if x_values[i] < x_values[i - 1]:
+            return i
+
+    # If we didn't find a descending point, we'll return the last increasing value
+    for i in range(len(x_values) - 1, 0, -1):
+        if x_values[i] > x_values[i - 1]:
+            return i
+    return len(x_values) // 2  # default to midpoint if not found """
+
+
+def calculate_rolling_slope(x_values, window_size=5):
+    # Calculate a rolling slope for the given x_values.
+    rolling_slopes = [0] * len(x_values)  # Initializing with zeros
+
+    for i in range(window_size, len(x_values)):
+        rolling_slopes[i] = (x_values[i] - x_values[i - window_size]) / window_size
+
+    return rolling_slopes
+
+    def label_rolling_slope(rolling_slopes):
+
+        labels = []
+
+    for slope in rolling_slopes:
+        if slope > 0:
+            labels.append("ascending")
+        elif slope < 0:
+            labels.append("descending")
+        else:
+            labels.append("flat")
+
+    return labels
+
+
+def detect_loop_type(x_values, y_values):
+    # Identify minimum and maximum voltages and their indices
+    min_voltage = min(y_values)
+    min_index = y_values.index(min_voltage)
+    max_voltage = max(y_values)
+    max_index = y_values.index(max_voltage)
+
+
+    # Determine loop type
+    if max_index < min_index and max_voltage > 0 and min_voltage < 0:
+        return "bipolar"
+    elif max_index > min_index and max_voltage > 0 and min_voltage >= 0:
+        return "monopolar"
+    elif max_index > min_index and max_voltage <= 0 and min_voltage < 0:
+        return "reverse monopolar"
+    elif max_index < min_index and max_voltage <= 0 and min_voltage >= 0:
+        return "reverse bipolar"
+    return "unknown"
+
+
+def extract_segments(x_values, y_values, loop_type):
+    min_displacement = min(y_values)
+    min_index = y_values.index(min_displacement)
+    max_displacement = max(y_values)
+    max_index = y_values.index(max_displacement)
+
+    if loop_type == "bipolar":
+        ascending1 = (x_values[:max_index], y_values[:max_index])
+        descending = (x_values[max_index:min_index], y_values[max_index:min_index])
+        ascending2 = (x_values[min_index:], y_values[min_index:])
+        return ascending1, descending, ascending2
+
+    elif loop_type == "monopolar":
+        ascending = (x_values[:max_index], y_values[:max_index])
+        descending = (x_values[max_index:], y_values[max_index:])
+        return ascending, descending
+
+    elif loop_type == "reverse monopolar":
+        descending = (x_values[:min_index], y_values[:min_index])
+        ascending = (x_values[min_index:], y_values[min_index:])
+        return descending, ascending
+
+    elif loop_type == "reverse bipolar":
+        descending1 = (x_values[:min_index], y_values[:min_index])
+        ascending = (x_values[min_index:max_index], y_values[min_index:max_index])
+        descending2 = (x_values[max_index:], y_values[max_index:])
+        return descending1, ascending, descending2
+
+    return []
+
+
+def get_slope(x, y):
+    # Calculate the slope of a segment
+    if not x or not y:
+        return None
+    slope, _ = np.polyfit(x, y, 1)
+    return slope
+
+
+def process_trace(trace, slope_ranges):
+    x_values = trace['X-Value'].tolist()
+    y_values = trace['Y-Data Value'].tolist()
+
+    loop_type = detect_loop_type(x_values, y_values)
+    segments = extract_segments(x_values, y_values, loop_type)
+
+    slope_data = []
+
+    for (start, end), direction in slope_ranges:
+        if direction == "ascending" and (loop_type in ["bipolar", "reverse monopolar"]):
+            x_seg, y_seg = segments[0] if loop_type == "bipolar" else segments[1]
+        elif direction == "ascending" and loop_type == "reverse bipolar":
+            x_seg, y_seg = segments[1]
+        elif direction == "descending":
+            if loop_type == "mono-polar":
+                x_seg, y_seg = segments[1]
+            elif loop_type == "reverse monopolar":
+                x_seg, y_seg = segments[0]
+            elif loop_type == "bipolar":
+                x_seg, y_seg = segments[1]
+            elif loop_type == "reverse bipolar":
+                x_seg, y_seg = segments[0]
+        else:
+            continue
+
+        start_idx = next((i for i, x in enumerate(x_seg) if x >= start), None)
+        end_idx = next((i for i, x in enumerate(x_seg) if x <= end), None)
+
+        if start_idx is not None and end_idx is not None:
+            x_subseg = x_seg[start_idx:end_idx + 1]
+            y_subseg = y_seg[start_idx:end_idx + 1]
+            slope = get_slope(x_subseg, y_subseg)
+            slope_data.append(((start, end), slope))
+
+    return slope_data
+
+
+# Function to add dashed lines to an axis representing the slopes of segments of the trace.
+def add_slope_lines(ax, trace, slopes_with_types, trace_idx, is_cumulative=True):
+    colors = cycle(['r', 'y', 'g', 'm', 'c', 'b'])  # Create a cycle of colors.
+
+    # Determine the y-axis limits
+    x_min_lim, x_max_lim = ax.get_xlim()
+    y_min, y_max = ax.get_ylim()
+
+    total_space = x_max_lim - x_min_lim
+
+    # Define a region at the bottom for placing equations
+    num_slopes = len(slopes_with_types)
+
+    # Define a y-position at the bottom for placing equations
+    equation_y_position = y_min
+
+    # 1. Determine the Position and Dimensions of the Box:
+    box_width = total_space * 0.50  # Adjust this to set the width of the box.
+    box_height = (y_max - y_min) * 0.35  # Adjust this to set the height of the box.
+    box_x = x_max_lim + 0.02 * total_space  # Start position of the box (a bit to the right of the graph).
+    box_y = y_max - box_height  # Align the top of the box with the top of the graph.
+
+    # 2. Draw the Box:
+    box = patches.Rectangle((box_x, box_y), box_width, box_height, facecolor='white', edgecolor='black')
+    ax.add_patch(box)
+
+    # 3. Populate the Box with the Slope Equations:
+    equation_start_y = y_max - 0.05 * (y_max - y_min)  # Start position for the first equation.
+    equation_x = box_x + box_width / 2  # Center the equations within the box.
+    equation_spacing = box_height / 5  # Divide the height of the box by 5 (4 equations + 1 for spacing).
+
+    for idx, ((start, end), segment_type) in enumerate(slopes_with_types):
+        # Extract a subset of the trace based on the specified range.
+        subset = trace[(trace['X-Value'] >= start) & (trace['X-Value'] <= end)]
+
+        loop_type = detect_loop_type(subset['X-Value'].tolist(), subset['Y-Data Value'].tolist())
+        segments = extract_segments(subset['X-Value'].tolist(), subset['Y-Data Value'].tolist(), loop_type)
+
+        if segment_type == "ascending":
+            if loop_type in ["bipolar", "reverse monopolar"]:
+                if segments:
+                    plot_subset = segments[0] if loop_type == "bipolar" else segments[1]
+                else:
+                    continue
+            elif loop_type == "reverse bipolar":
+                if len(segments) > 1:
+                    plot_subset = segments[1]
+                else:
+                    continue
+            else:  # For mono-polar and unknown loop types
+                if segments:
+                    plot_subset = segments[0]
+                else:
+                    continue
+        elif segment_type == "descending":
+            if loop_type == "mono-polar":
+                if len(segments) > 1:
+                    plot_subset = segments[1]
+                else:
+                    continue
+            elif loop_type == "reverse mono-polar":
+                if segments:
+                    plot_subset = segments[0]
+                else:
+                    continue
+            elif loop_type == "bipolar":
+                if len(segments) > 1:
+                    plot_subset = segments[1]
+                else:
+                    continue
+            elif loop_type == "reverse bipolar":
+                if segments:
+                    plot_subset = segments[0]
+                else:
+                    continue
+            else:  # For unknown loop types
+                if segments:
+                    plot_subset = segments[0]
+                else:
+                    continue
+        else:  # If segment_type is "both"
+            plot_subset = subset
+
+        color = next(colors)  # Get the next color from the cycle.
+
+        # Get evenly spaced x-position for the equation string
+
+        # Calculate the linear regression line for the plot subset.
+        if len(plot_subset[0]) > 1 and len(set(plot_subset[0])) > 1 and len(set(plot_subset[1])) > 1:
+            slope, intercept = np.polyfit(plot_subset[0], plot_subset[1], 1)
+            trendline = lambda x: slope * x + intercept
+            equation_string = f"y = {slope:.2f}x + {intercept:.2f}"  # Format the equation string.
+        else:
+            continue  # Skip this iteration if there are not enough data points
+
+        # Get the x_position for the current equation from the x_positions list
+
+        # Display the equation at the determined position
+        ax.text(equation_x, equation_start_y - idx * equation_spacing, equation_string, fontsize=12, color=color,
+                ha="center")
+        # Extend the x-range of the trend line.
+        x_min = min(plot_subset[0]) - 2.5 * (max(plot_subset[0]) - min(plot_subset[0]))
+        x_max = max(plot_subset[0]) + 2.5 * (max(plot_subset[0]) - min(plot_subset[0]))
+        extended_x = np.linspace(x_min, x_max, 100)
+
+        # Plot the trend line and the plot subset.
+        ax.plot(extended_x, trendline(extended_x), color=color, linestyle='--', linewidth=2.5)
+        ax.plot(plot_subset[0], plot_subset[1], color=color, linewidth=2)
+
+        # If there's no data in the plot_subset or if there's only one data point, skip further calculations for this subset.
+        if len(plot_subset[0]) <= 1 or len(set(plot_subset[1])) <= 1:
+            continue
+
+        # Recalculate the linear regression and determine the R^2 value.
+        predicted_y = np.array(plot_subset[0]) * slope + intercept
+        r2 = r2_score(plot_subset[1], predicted_y)
+
+        # Store the calculated slopes and R^2 values in the appropriate lists.
+        if is_cumulative:
+            cumulative_average_slopes[trace_idx].append(slope)
+            cumulative_average_r2[trace_idx].append(r2)
+            cumulative_r2_colors.append(color)
+            cumulative_slope_colors.append(color)
+        else:
+            average_slopes[trace_idx].append(slope)
+            average_r2[trace_idx].append(r2)
+            average_r2_colors.append(color)
+            average_slope_colors.append(color)
+
+
+# Invoke the get_ranges function to collect slope ranges and types from the user.
+slope_ranges = get_ranges()
+
+
+# Function to plot combined average data based on provided slope ranges.
+def plot_combined_average_data(slope_ranges):
+    # Initialize a new figure with a specified size.
+    plt.figure(figsize=(35, 40))
+
+    # Regular averages section:
+    # Loop through each trace in the average_traces list.
+    for idx, trace in enumerate(average_traces):
+        # Create a subplot with the given grid size and plot position.
+        ax = plt.subplot(5, 5, idx + 1)
+        # Configure tick parameters for the current axis.
+        ax.tick_params(direction='in')
+        # Set the number of x-axis ticks.
+        ax.locator_params(axis='x', nbins=6)
+
+        # Plot the regular average trace.
+        plt.plot(trace['X-Value'], trace['Y-Data Value'], label='Average', linewidth=2)
+
+        # Highlight the slopes of interest based on provided ranges.
+        add_slope_lines(ax, trace, slope_ranges, idx, is_cumulative=False)
+
+        # Set titles and labels for the current subplot.
+        plt.title(f'Averages {idx * 10 + 1} - {(idx + 1) * 10}', **title_font)
+        plt.xlabel('Applied Voltage', **axis_font)
+        plt.ylabel('Displacement (nm)', **axis_font)
+
+    # Cumulative averages section:
+    # Loop through each trace in the cumulative_average_traces list.
+    for idx, trace in enumerate(cumulative_average_traces):
+        # Create a subplot with the given grid size and plot position for cumulative averages.
+        ax = plt.subplot(5, 5, idx + 11)
+        # Configure tick parameters for the current axis.
+        ax.tick_params(direction='in')
+        # Set the number of x-axis ticks.
+        ax.locator_params(axis='x', nbins=6)
+
+        # Plot the cumulative average trace.
+        plt.plot(trace['X-Value'], trace['Y-Data Value'], label='Cumulative Average', linewidth=2)
+
+        # Highlight the slopes of interest based on provided ranges for cumulative averages.
+        add_slope_lines(ax, trace, slope_ranges, idx)
+
+        # Set titles and labels for the current subplot.
+        plt.title(f'Cumulative Averages 1 - {(idx + 1) * 10}', **title_font)
+        plt.xlabel('Applied Voltage', **axis_font)
+        plt.ylabel('Displacement (nm)', **axis_font)
+
+    # Graphs for regular average slope and R^2 values.
+    ax1 = plt.subplot(5, 5, 21)
+    ax2 = plt.subplot(5, 5, 22)
+    # Loop through slopes and R^2 values for regular averages and plot them.
+    for idx, (slopes, r2_values) in enumerate(zip(average_slopes, average_r2)):
+        ax1.scatter([10 * (idx + 1)] * len(slopes), slopes, c=average_slope_colors[:len(slopes)], marker='o')
+        ax2.scatter([10 * (idx + 1)] * len(r2_values), r2_values, c=average_r2_colors[:len(r2_values)], marker='o')
+
+    # Formatting for the regular average slope graph.
+    ax1.set_xlim(0, 100)
+    ax1.set_xlabel('Average', **axis_font)
+    ax1.set_ylabel('Slope', **axis_font)
+    ax1.set_title('Regular Avg Slope', **title_font)
+    ax1.set_xticks(range(10, 101, 10))
+    ax1.set_xticklabels(range(10, 101, 10))
+
+    # Formatting for the regular average R^2 graph.
+    ax2.set_xlim(0, 100)
+    ax2.set_xlabel('Average', **axis_font)
+    ax2.set_ylabel('R^2 Value', **axis_font)
+    ax2.set_title('Regular Avg R^2', **title_font)
+    ax2.set_xticks(range(10, 101, 10))
+    ax2.set_xticklabels(range(10, 101, 10))
+
+    # Graphs for cumulative average slope and R^2 values.
+    ax3 = plt.subplot(5, 5, 23)
+    ax4 = plt.subplot(5, 5, 24)
+    # Loop through slopes and R^2 values for cumulative averages and plot them.
+    for idx, (slopes, r2_values) in enumerate(zip(cumulative_average_slopes, cumulative_average_r2)):
+        ax3.scatter([10 * (idx + 1)] * len(slopes), slopes, c=cumulative_slope_colors[:len(slopes)], marker='o')
+        ax4.scatter([10 * (idx + 1)] * len(r2_values), r2_values, c=cumulative_r2_colors[:len(r2_values)], marker='o')
+
+    # Formatting for the cumulative average slope graph.
+    ax3.set_xlim(0, 100)
+    ax3.set_xlabel('Cumulative Average', **axis_font)
+    ax3.set_ylabel('Slope', **axis_font)
+    ax3.set_title('Cumulative Avg Slope', **title_font)
+    ax3.set_xticks(range(10, 101, 10))
+    ax3.set_xticklabels(range(10, 101, 10))
+
+    # Formatting for the cumulative average R^2 graph.
+    ax4.set_xlim(0, 100)
+    ax4.set_xlabel('Cumulative Average', **axis_font)
+    ax4.set_ylabel('R^2 Value', **axis_font)
+    ax4.set_title('Cumulative Avg R^2', **title_font)
+    ax4.set_xticks(range(10, 101, 10))
+    ax4.set_xticklabels(range(10, 101, 10))
+
+    def compute_std_for_points_across_traces(traces):
+        # The number of data points in each trace should be the same, so we'll use the first trace as reference.
+        num_points = len(traces[0])
+
+        std_vals = []
+
+        # Iterate through each data point.
+        for point_idx in range(num_points):
+            # Extract the point_idx-th value from each trace.
+            values_for_point = [trace.iloc[point_idx]['Y-Data Value'] for trace in traces]
+
+            # Compute the standard deviation for the current point across all traces.
+            std_for_point = np.std(values_for_point)
+            std_vals.append(std_for_point)
+
+        return std_vals
+
+    # Compute standard deviations for the points across the 100 corrected traces.
+    corrected_point_std_vals = compute_std_for_points_across_traces(adjusted_traces)
+
+    # Plot the computed standard deviations on the final subplot.
+    ax5 = plt.subplot(5, 5, 25)
+
+    # Use the enumerate function to loop through both the index and the standard deviation value.
+    for idx, std_val in enumerate(corrected_point_std_vals):
+        ax5.scatter(idx + 1, std_val, c='b', marker='o')  # Using blue color for corrected traces.
+
+    # Formatting for the standard deviation graph.
+    ax5.set_xlim(0, len(corrected_point_std_vals) + 1)
+    ax5.set_xlabel('Data Point Index', **axis_font)
+    ax5.set_ylabel('Standard Deviation', **axis_font)
+    ax5.set_title('Standard Deviation of All Points', **title_font)
+
+    # Finally, save the figure
+    file_path = os.path.join(save_directory, 'Combined_Averages.jpg')
+    plt.tight_layout()
+    plt.savefig(file_path)
+    plt.close()
+
+
+plot_combined_average_data(slope_ranges)
+
+# FERROELECTRIC
+
+
+# --- User Input Section ---
+file_directory = input("Enter the file directory: ")
+file_name = input("Enter the file name: ")
+file_path = os.path.join(file_directory, file_name)
+
+beginning_remove = int(input("Enter the number of points to remove from the beginning: "))
+end_remove = int(input("Enter the number of points to remove from the end: "))
+
+# --- Data Reading and Organization ---
+with open(file_path, 'r') as file:
+    lines = file.readlines()
+
+# Extract trace data from the list of lines.
+traces_data = [lines[idx + 2: idx + 2004] for idx, line in enumerate(lines) if "Trace:" in line]
+
+# Convert each trace (a list of strings) into a pandas DataFrame with columns for Voltage and Y-Data Value.
+# We're now using line.split()[2:4] to get the 3rd and 4th columns.
+traces = [pd.DataFrame([line.split()[2:4] for line in trace], columns=['Voltage', 'Polarization (μC/cm2)'], dtype=float)
+          for trace in traces_data]
+
+# For removing data points from the start and end of each trace
+traces = [trace.iloc[beginning_remove:-end_remove] for trace in traces]
+
+# Formatting for plots
+title_font = {'weight': 'bold', 'size': 15}
+axis_font = {'size': 12}
+figures_required = len(traces) // 25  # Assuming 25 traces per figure, adjust as needed
+traces_per_figure = 25
+
+
+# Plotting function
+# Plotting function
+def plot_and_save(traces, prefix, ylabel):
+    for fig_num in range(figures_required):
+        plt.figure(figsize=(15, 15))
+        subset_traces = traces[fig_num * traces_per_figure:(fig_num + 1) * traces_per_figure]
+
+        for idx, trace in enumerate(subset_traces):
+            ax = plt.subplot(5, 5, idx + 1)
+            ax.tick_params(direction='in')
+            ax.locator_params(axis='x', nbins=6)
+            plt.plot(trace['Voltage'], trace['Polarization (μC/cm2)'])
+
+            # Calculate max and min for Polarization and annotate them on the plot
+            max_polarization = trace['Polarization (μC/cm2)'].max()
+            min_polarization = trace['Polarization (μC/cm2)'].min()
+            annotation_text = f"Max: {max_polarization:.2f}\nMin: {min_polarization:.2f}"
+            ax.annotate(annotation_text, xy=(0.7, 0.05), xycoords='axes fraction', fontsize=10,
+                        bbox=dict(boxstyle="round,pad=0.3", edgecolor="black", facecolor="aliceblue"))
+
+            plt.title(f'Trial {fig_num * traces_per_figure + idx + 1}', **title_font)
+            plt.xlabel('Voltage', **axis_font)
+            plt.ylabel(ylabel, **axis_font)
+
+        file_path = os.path.join(file_directory,
+                                 f'{prefix}_Array_{fig_num + 1}.jpg')  # Saving in the same directory as the input file
+        save_directory = os.path.join(file_directory, "Plots")
+        plt.tight_layout()
+        plt.savefig(file_path)
+        plt.close()
+
+
+# Plot and save the data
+plot_and_save(traces, "Ferroelectric", 'Polarization (μC/cm2)')
+
+print("All plots have been saved successfully!")
